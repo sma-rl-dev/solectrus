@@ -31,7 +31,7 @@ class UpdateCheck
   end
 
   def self.skip_http?
-    Rails.env.local?
+    Rails.env.local? || ENV['TESTER_ENV_SKIP_REGISTRATION'] == 'true'
   end
 
   def latest_version

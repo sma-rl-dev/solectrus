@@ -1,0 +1,106 @@
+# Solectrus tester-env compose — source-built dashboard + required services
+# Port and image tag configurable via env: PORT (default 13000), IMAGE_TAG (default tester-env-solectrus:dev)
+# Reset: docker compose -f docker-compose.tester-env.yml down -v
+
+services:
+  postgresql:
+    image: postgres:18-alpine
+    environment:
+      - TZ=Europe/Berlin
+      - POSTGRES_PASSWORD=postgres
+    volumes:
+      - solectrus_pg_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 20s
+      retries: 5
+      start_period: 60s
+    restart: "no"
+
+  redis:
+    image: redis:8-alpine
+    volumes:
+      - solectrus_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 20s
+      retries: 5
+      start_period: 60s
+    restart: "no"
+
+  influxdb:
+    image: influxdb:2.9-alpine
+    volumes:
+      - solectrus_influx_data:/var/lib/influxdb2
+    environment:
+      - TZ=Europe/Berlin
+      - DOCKER_INFLUXDB_INIT_MODE=setup
+      - DOCKER_INFLUXDB_INIT_USERNAME=admin
+      - DOCKER_INFLUXDB_INIT_PASSWORD=adminpass123
+      - DOCKER_INFLUXDB_INIT_ORG=solectrus
+      - DOCKER_INFLUXDB_INIT_BUCKET=solectrus
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=my-secret-admin-token
+    command: influxd run --bolt-path /var/lib/influxdb2/influxd.bolt --engine-path /var/lib/influxdb2/engine --store disk
+    healthcheck:
+      test: ["CMD", "influx", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: "no"
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        COMMIT_SHA: "${COMMIT_SHA:-5105266ac738f290cbcbf98451841d803ad649e0}"
+        COMMIT_TIME: "${COMMIT_TIME:-2026-06-05T00:00:00Z}"
+        COMMIT_VERSION: "${COMMIT_VERSION:-v1.2.1}"
+        COMMIT_BRANCH: "${COMMIT_BRANCH:-main}"
+    image: "${IMAGE_TAG:-tester-env-solectrus:dev}"
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      influxdb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "${PORT:-13000}:3000"
+    environment:
+      - TZ=Europe/Berlin
+      - APP_HOST=localhost
+      - FORCE_SSL=false
+      - SECRET_KEY_BASE=61c01ec0167b18e26364cb26728fd4430f4dd6822166b8e0797c87e29e8aaadd1074ed108c0ec112fc97643cc5ad1aaea77c947c20d47858446c502e1a3f7b78
+      - WEB_CONCURRENCY=0
+      - INSTALLATION_DATE=2025-01-01
+      - ADMIN_PASSWORD=adminpass123
+      - DB_HOST=postgresql
+      - DB_PASSWORD=postgres
+      - DB_USER=postgres
+      - REDIS_URL=redis://redis:6379/1
+      - INFLUX_HOST=influxdb
+      - INFLUX_SCHEMA=http
+      - INFLUX_PORT=8086
+      - INFLUX_TOKEN=my-secret-admin-token
+      - INFLUX_ORG=solectrus
+      - INFLUX_BUCKET=solectrus
+      - INFLUX_SENSOR_INVERTER_POWER=inverter:power
+      - INFLUX_SENSOR_HOUSE_POWER=house:power
+      - INFLUX_SENSOR_GRID_IMPORT_POWER=grid:import_power
+      - INFLUX_SENSOR_GRID_EXPORT_POWER=grid:export_power
+      - INFLUX_SENSOR_BATTERY_CHARGING_POWER=battery:charging_power
+      - INFLUX_SENSOR_BATTERY_DISCHARGING_POWER=battery:discharging_power
+      - INFLUX_SENSOR_BATTERY_SOC=battery:soc
+      - INFLUX_SENSOR_WALLBOX_POWER=wallbox:power
+      - INFLUX_SENSOR_HEATPUMP_POWER=heatpump:power
+      - TESTER_ENV_SKIP_REGISTRATION=true
+    restart: "no"
+
+volumes:
+  solectrus_pg_data:
+  solectrus_redis_data:
+  solectrus_influx_data:

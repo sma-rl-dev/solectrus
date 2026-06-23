@@ -1,0 +1,192 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Solectrus - Tester Environment CLI
+# Usage: ./tester-env <command> [--run-id <id>] [--port <port>]
+# Commands: deploy, seed, verify, reset, stop, logs, status, help
+
+RUN_ID="default"
+PORT="13000"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.tester-env.yml"
+DATA_SCRIPT="${SCRIPT_DIR}/scripts/tester-env-data.sh"
+PROJECT_NAME="${PROJECT_NAME:-solectrus}"
+
+refresh_names() {
+    local suffix=""
+    if [[ "${RUN_ID}" != "default" ]]; then
+        suffix="-${RUN_ID}"
+        PROJECT_NAME="solectrus${suffix}"
+    fi
+    # IMAGE_TAG set by scripts/rl-env to a content-addressed tag so identical
+    # (baseline, patch-set) combos share an image. Manual invocations get :dev.
+    IMAGE_NAME="${IMAGE_TAG:-tester-env-solectrus:dev}"
+    export IMAGE_TAG="${IMAGE_NAME}"
+    export PORT
+    export PROJECT_NAME
+}
+
+cmd_deploy() {
+    echo "==> Building Docker image (${IMAGE_NAME})..."
+    docker compose -f "${COMPOSE_FILE}" -p "${PROJECT_NAME}" build dashboard
+
+    echo "==> Starting all services on port ${PORT}..."
+    docker compose -f "${COMPOSE_FILE}" -p "${PROJECT_NAME}" up -d --wait
+
+    echo "==> Waiting for dashboard to become healthy..."
+    local max_attempts=60
+    local attempt=0
+    while [[ $attempt -lt $max_attempts ]]; do
+        if curl -s -o /dev/null -w "%{http_code}" "http://localhost:${PORT}/" 2>/dev/null | grep -qE '^(200|302|301)$'; then
+            echo "==> Dashboard is responding!"
+            break
+        fi
+        sleep 2
+        ((attempt+=1))
+    done
+
+    echo "==> Admin credentials: username=admin (hidden), password=adminpass123"
+    echo "==> On first visit, the login page also registers the installation."
+    echo "==> App running at http://localhost:${PORT}"
+}
+
+cmd_reset() {
+    echo "==> Resetting environment (containers + volumes)..."
+    docker compose -f "${COMPOSE_FILE}" -p "${PROJECT_NAME}" down -v 2>/dev/null || true
+    echo "==> Reset complete. Run 'deploy' to start fresh."
+}
+
+cmd_seed() {
+    "${DATA_SCRIPT}" seed "${COMPOSE_FILE}" "${PROJECT_NAME}"
+}
+
+cmd_verify() {
+    "${DATA_SCRIPT}" verify "${COMPOSE_FILE}" "${PROJECT_NAME}"
+}
+
+cmd_stop() {
+    echo "==> Stopping containers (preserving data)..."
+    docker compose -f "${COMPOSE_FILE}" -p "${PROJECT_NAME}" down 2>/dev/null || true
+    echo "==> Stopped."
+}
+
+cmd_logs() {
+    docker compose -f "${COMPOSE_FILE}" -p "${PROJECT_NAME}" logs -f 2>/dev/null || echo "No containers running."
+}
+
+cmd_status() {
+    local running
+    running=$(docker compose -f "${COMPOSE_FILE}" -p "${PROJECT_NAME}" ps --format json 2>/dev/null | grep -c '"State":"running"' 2>/dev/null || true)
+    running="${running:-0}"
+    # Trim whitespace
+    running=$(echo "${running}" | tr -d '[:space:]')
+    if [[ "${running}" -gt 0 ]]; then
+        echo "Status: RUNNING (${running} services)"
+        echo "URL: http://localhost:${PORT}"
+        echo "Project: ${PROJECT_NAME}"
+        docker compose -f "${COMPOSE_FILE}" -p "${PROJECT_NAME}" ps --format "table {{.Name}}\t{{.State}}\t{{.Ports}}" 2>/dev/null
+    else
+        echo "Status: NOT RUNNING"
+    fi
+}
+
+cmd_help() {
+    cat <<EOF
+Solectrus - Tester Environment CLI
+
+Usage: ./tester-env <command> [--run-id <id>] [--port <port>]
+
+Commands:
+  deploy    Build image, start all services, wait for readiness
+  seed      Load deterministic PostgreSQL settings and InfluxDB PV timeseries
+  verify    Verify seeded settings and InfluxDB timeseries counts
+  reset     Stop containers and remove all volumes (clean slate)
+  stop      Stop containers (preserves data volumes)
+  logs      Tail container logs
+  status    Show service status and ports
+  help      Show this help message
+
+Options:
+  --run-id <id>     Isolate project name for parallel runs (default: default)
+  --port <port>     Host port for the dashboard (default: 13000)
+
+Environment:
+  IMAGE_TAG         Override the Docker image tag (default: tester-env-solectrus:dev)
+
+Typical workflow:
+  ./tester-env deploy    # Build & start
+  ./tester-env seed      # Populate realistic PV dashboard data
+  ./tester-env verify    # Check deterministic seed data
+  ./tester-env status    # Check running state
+  ./tester-env reset     # Clean slate
+
+Credentials: admin / adminpass123
+First visit: Login page also registers the installation.
+
+Services: PostgreSQL 18, Redis 8, InfluxDB 2.9, Rails dashboard (source-built)
+Volumes: solectrus_pg_data, solectrus_redis_data, solectrus_influx_data
+
+Note: Port 3000 is avoided because it conflicts with chromium-browser containers.
+EOF
+}
+
+main() {
+    local cmd="${1:-help}"
+    local ref=""
+
+    # Parse optional arguments
+    for ((i=2; i<=$#; i++)); do
+        local arg="${!i}"
+        case "${arg}" in
+            --run-id)
+                local next=$((i+1))
+                if [[ ${next} -le $# ]]; then
+                    RUN_ID="${!next}"
+                    ((i++))
+                else
+                    echo "Error: --run-id requires a value"
+                    exit 1
+                fi
+                ;;
+            --port)
+                local next=$((i+1))
+                if [[ ${next} -le $# ]]; then
+                    PORT="${!next}"
+                    ((i++))
+                else
+                    echo "Error: --port requires a value"
+                    exit 1
+                fi
+                ;;
+            --help|-h)
+                cmd_help
+                exit 0
+                ;;
+            *)
+                echo "Unknown option: ${arg}"
+                cmd_help
+                exit 1
+                ;;
+        esac
+    done
+
+    refresh_names
+
+    case "${cmd}" in
+        deploy) cmd_deploy ;;
+        seed) cmd_seed ;;
+        verify) cmd_verify ;;
+        reset) cmd_reset ;;
+        stop) cmd_stop ;;
+        logs) cmd_logs ;;
+        status) cmd_status ;;
+        help|--help|-h) cmd_help ;;
+        *)
+            echo "Unknown command: ${cmd}"
+            cmd_help
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"
