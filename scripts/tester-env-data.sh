@@ -36,6 +36,31 @@ print(len(timestamps))
 PY
 }
 
+expected_wallbox_samples() {
+    python3 - <<'PY'
+from datetime import date, datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
+tz = ZoneInfo("Europe/Berlin")
+start = date.fromisoformat("2025-01-01")
+today = datetime.now(tz).date()
+timestamps = set()
+range_start = datetime(2025, 1, 1, tzinfo=timezone.utc).timestamp()
+day = start
+while day <= today:
+    for hour in range(24):
+        # Pinned deterministic no-point quiet window: no wallbox samples for
+        # local hours 02:00-04:00 Europe/Berlin (consumer-offphase-window).
+        if hour in (2, 3, 4):
+            continue
+        local_dt = datetime.combine(day, time(hour, 0), tzinfo=tz)
+        ts = int(local_dt.astimezone(timezone.utc).timestamp())
+        if ts >= range_start:
+            timestamps.add(ts)
+    day += timedelta(days=1)
+print(len(timestamps))
+PY
+}
+
 seed_settings() {
     compose exec -T dashboard bin/rails db:seed >/dev/null
     compose exec -T dashboard bin/rails runner - <<'RUBY'
@@ -111,7 +136,12 @@ while day <= last_day:
         print(f"house power={house} {timestamp}")
         print(f"grid import_power={grid_import},export_power={grid_export} {timestamp}")
         print(f"battery charging_power={battery_charge},discharging_power={battery_discharge},soc={round(soc, 1)} {timestamp}")
-        print(f"wallbox power={float(wallbox)} {timestamp}")
+        # Pinned deterministic no-point quiet window (consumer-offphase-window):
+        # no wallbox samples for local hours 02:00-04:00 Europe/Berlin every day,
+        # so each Tue/Thu charging day pairs an active 18-21h window with an
+        # overnight no-point off-phase. Daytime idle hours still write 0.0.
+        if hour not in (2, 3, 4):
+            print(f"wallbox power={float(wallbox)} {timestamp}")
         print(f"heatpump power={heatpump} {timestamp}")
     day += timedelta(days=1)
 PY
@@ -157,8 +187,9 @@ RUBY
 }
 
 verify_influx() {
-    local expected
+    local expected expected_wallbox
     expected="$(expected_samples)"
+    expected_wallbox="$(expected_wallbox_samples)"
     local sensors=(
         "inverter power"
         "house power"
@@ -173,10 +204,14 @@ verify_influx() {
     for sensor in "${sensors[@]}"; do
         local measurement="${sensor% *}"
         local field="${sensor#* }"
+        local want="${expected}"
+        if [[ "${sensor}" == "wallbox power" ]]; then
+            want="${expected_wallbox}"
+        fi
         local actual
         actual="$(query_count "${measurement}" "${field}")"
-        if [[ "${actual}" != "${expected}" ]]; then
-            echo "InfluxDB count mismatch for ${measurement}:${field}: expected ${expected}, got ${actual}" >&2
+        if [[ "${actual}" != "${want}" ]]; then
+            echo "InfluxDB count mismatch for ${measurement}:${field}: expected ${want}, got ${actual}" >&2
             exit 1
         fi
         echo "InfluxDB verified ${measurement}:${field} count=${actual}"
@@ -194,7 +229,7 @@ case "${COMMAND}" in
     verify)
         verify_settings
         verify_influx
-        echo "Seed verification passed: expected hourly sample count per field=$(expected_samples)"
+        echo "Seed verification passed: expected hourly sample count per field=$(expected_samples) (wallbox=$(expected_wallbox_samples) with 02:00-04:00 quiet window omitted)"
         ;;
     *)
         echo "Unknown data command: ${COMMAND}" >&2
