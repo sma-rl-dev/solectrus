@@ -61,6 +61,8 @@ services:
         COMMIT_VERSION: "${COMMIT_VERSION:-v1.2.1}"
         COMMIT_BRANCH: "${COMMIT_BRANCH:-main}"
     image: "${IMAGE_TAG:-tester-env-solectrus:dev}"
+    volumes:
+      - ./scripts/tester-env-skip-registration.rb:/app/config/initializers/tester_env_skip_registration.rb:ro
     depends_on:
       postgresql:
         condition: service_healthy
