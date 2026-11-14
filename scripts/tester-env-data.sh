@@ -162,6 +162,21 @@ seed_influx() {
         --format lp
 }
 
+seed_summaries() {
+    compose exec -T dashboard bin/rails runner - <<'RUBY'
+# Charts, statistics and the Insights trend comparison read daily summaries
+# (summaries/summary_values) instead of raw InfluxDB points. The app builds
+# those rows lazily, only for the timeframe of the page that triggers the
+# build, so the previous-month Insights trend stays hidden until the year view
+# has been visited. Precompute the previous month plus the current month to
+# date so a freshly seeded instance renders the comparison immediately.
+from = Date.current.beginning_of_month.prev_month
+to = Date.current
+built = Sensor::Summarizer.call(Timeframe.new("#{from}..#{to}"))
+puts "Daily summaries ensured for #{from}..#{to}: #{built} day(s), #{Summary.count} summaries, #{SummaryValue.count} values"
+RUBY
+}
+
 query_count() {
     local measurement="${1}"
     local field="${2}"
@@ -218,18 +233,46 @@ verify_influx() {
     done
 }
 
+verify_summaries() {
+    compose exec -T dashboard bin/rails runner - <<'RUBY'
+timeframe = Timeframe.month
+trend = Insights.new(sensor: Sensor::Registry[:autarky], timeframe:).monthly_trend
+raise 'monthly trend is not available for autarky' unless trend
+
+previous_period_start = trend.base_timeframe.effective_beginning_date
+first_date = trend.first_date
+unless first_date && first_date <= previous_period_start
+  raise "daily summaries do not cover #{previous_period_start} (earliest: #{first_date.inspect})"
+end
+puts "Daily summaries cover #{previous_period_start} (earliest: #{first_date})"
+
+# The app hides month trends during the first two days of a month regardless of
+# seed data (Trend#valid? guards on days_passed), so only check coverage there.
+if timeframe.days_passed <= 1
+  puts 'Monthly trend is hidden by the app during the first two days of the month'
+else
+  raise 'monthly trend is invalid' unless trend.valid?
+  raise 'monthly trend has no previous-period value' if trend.base_value.nil?
+  puts "Monthly autarky trend verified: #{previous_period_start}..#{trend.base_timeframe.effective_ending_date} baseline, current #{trend.current_value}, previous #{trend.base_value}"
+end
+RUBY
+}
+
 case "${COMMAND}" in
     seed)
         echo "==> Seeding Solectrus PostgreSQL settings..."
         seed_settings
         echo "==> Seeding deterministic hourly PV data from ${SEED_START_DATE} through today (${TZ_NAME})..."
         seed_influx
+        echo "==> Precomputing daily summaries (previous month through today)..."
+        seed_summaries
         echo "==> Seed complete. Run './tester-env verify' to validate counts."
         ;;
     verify)
         verify_settings
         verify_influx
-        echo "Seed verification passed: expected hourly sample count per field=$(expected_samples) (wallbox=$(expected_wallbox_samples) with 02:00-04:00 quiet window omitted)"
+        verify_summaries
+        echo "Seed verification passed: expected hourly sample count per field=$(expected_samples) (wallbox=$(expected_wallbox_samples) with 02:00-04:00 quiet window omitted); daily summaries cover the previous-month trend baseline"
         ;;
     *)
         echo "Unknown data command: ${COMMAND}" >&2

@@ -38,6 +38,7 @@ Port 3000 is avoided due to chromium-browser container conflicts.
 Profile: **Sonnenhof Kirchblick 9.8 kWp** / Mara Schneider
 
 - 9 InfluxDB measurement fields with hourly data from 2025-01-01 through current day (Europe/Berlin)
+- Daily summaries precomputed for the previous month through the current day (SQL-backed charts and the Insights previous-month trend comparison render on a fresh seed, without visiting the year view first)
 - Fixed PostgreSQL settings for plant name, operator name, sensor names
 - No forecast or registration gate
 

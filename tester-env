@@ -98,8 +98,8 @@ Usage: ./tester-env <command> [--run-id <id>] [--port <port>]
 
 Commands:
   deploy    Build image, start all services, wait for readiness
-  seed      Load deterministic PostgreSQL settings and InfluxDB PV timeseries
-  verify    Verify seeded settings and InfluxDB timeseries counts
+  seed      Load deterministic PostgreSQL settings, InfluxDB PV timeseries and daily summaries
+  verify    Verify seeded settings, InfluxDB timeseries counts and summary coverage
   reset     Stop containers and remove all volumes (clean slate)
   stop      Stop containers (preserves data volumes)
   logs      Tail container logs
